@@ -22,15 +22,21 @@ async function main(): Promise<void> {
   const byYear = new Map(tables.map((table) => [table.year, table]));
   const places = [TOTAL, ...PREFECTURES];
   const facilityYears = years.filter((year) => byYear.get(year)?.facility !== null);
+  const guestFacilityYears = years.filter((year) => byYear.get(year)?.guestFacility !== null);
 
   const cube: StaysJson = {
     years,
     prefectures: places,
     nights: places.map((place) => years.map((year) => byYear.get(year)!.nights[place]!)),
+    guests: places.map((place) => years.map((year) => byYear.get(year)!.guests?.[place] ?? null)),
     facilityYears,
     facilities: [...FACILITIES],
     facility: places.map((place) =>
       facilityYears.map((year) => FACILITIES.map((name) => byYear.get(year)!.facility![place]![name]!)),
+    ),
+    guestFacilityYears,
+    guestFacility: places.map((place) =>
+      guestFacilityYears.map((year) => FACILITIES.map((name) => byYear.get(year)!.guestFacility![place]![name]!)),
     ),
     nations: [...NATIONS],
     byNation: NATIONS.map((nation) =>

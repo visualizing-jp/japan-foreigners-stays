@@ -19,6 +19,23 @@ export function exact(n: number): string {
   return `${int.format(n)}人泊`;
 }
 
+export function guests(n: number): string {
+  if (n >= 100_000_000) {
+    let oku = Math.floor(n / 100_000_000);
+    let man = Math.round((n - oku * 100_000_000) / 10_000);
+    if (man === 10_000) {
+      oku += 1;
+      man = 0;
+    }
+    return man === 0 ? `${int.format(oku)}億人` : `${int.format(oku)}億${int.format(man)}万人`;
+  }
+  return n >= 100_000 ? `${int.format(Math.round(n / 10_000))}万人` : `${int.format(n)}人`;
+}
+
+export function exactGuests(n: number): string {
+  return `${int.format(n)}人`;
+}
+
 export function pct(share: number): string {
   return `${one.format(share * 100)}%`;
 }

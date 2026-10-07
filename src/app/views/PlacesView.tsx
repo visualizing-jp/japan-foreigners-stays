@@ -5,8 +5,8 @@
 import { use, useMemo } from "react";
 import { loadStays } from "../data/load.ts";
 import { FACILITY_COLORS, PICK_COLOR, RANK_COLORS, REST_COLOR } from "../data/colors.ts";
-import { nightsAt } from "../data/derive.ts";
-import { exact, nights, pct } from "../data/format.ts";
+import { stayAt, type StayUnit } from "../data/derive.ts";
+import { exact, exactGuests, guests, nights, pct } from "../data/format.ts";
 import { RankList, type RankRow } from "../components/RankList.tsx";
 import { Segmented } from "../components/Segmented.tsx";
 import { StackedYears, type Column, type Measure } from "../components/StackedYears.tsx";
@@ -16,8 +16,12 @@ import { useUrlState } from "../hooks/useUrlState.ts";
 
 const TOP = 8;
 const REST = "そのほか";
+const UNITS = [
+  { value: "nights", label: "人泊" },
+  { value: "guests", label: "人数" },
+] as const;
 const MEASURES = [
-  { value: "count", label: "人泊" },
+  { value: "count", label: "実数" },
   { value: "share", label: "構成比" },
 ] as const;
 
@@ -28,25 +32,31 @@ export function PlacesView() {
   const year = Number(yearParam);
   const yi = d.years.indexOf(year);
   const [measure, setMeasure] = useUrlState<Measure>("measure", "count", (v) => v === "count" || v === "share");
+  const hasGuests = d.guests[0]!.some((v) => v !== null);
+  const [unit, setUnit] = useUrlState<StayUnit>("unit", "nights", (v) => v === "nights" || (v === "guests" && hasGuests));
   const [chart, setChart] = useUrlState<Chart>("chart", "bars", (v) => CHARTS.some((c) => c.value === v));
   const [selected, setPicked] = useUrlState<string>("p", "", (v) => d.prefectures.includes(v) && v !== d.prefectures[0]);
   const Years = chart === "stream" ? Streamgraph : StackedYears;
+  const amount = unit === "nights" ? exact : exactGuests;
+  const compact = unit === "nights" ? nights : guests;
+  const unitLabel = unit === "nights" ? "人泊" : "人数";
 
   const top = useMemo(
     () =>
       d.prefectures
-        .map((name, i) => ({ name, v: i === 0 ? -1 : nightsAt(d, i, d.years.length - 1) }))
+        .map((name, i) => ({ name, v: i === 0 ? -1 : stayAt(d, i, d.years.length - 1, unit) ?? -1 }))
         .filter((r) => r.v >= 0)
         .sort((a, b) => b.v - a.v)
         .slice(0, TOP)
         .map((r) => r.name),
-    [d],
+    [d, unit],
   );
 
-  const total = nightsAt(d, 0, yi);
+  const total = stayAt(d, 0, yi, unit);
   const rows: RankRow[] = d.prefectures.flatMap((name, i) => {
     if (i === 0) return [];
-    const value = nightsAt(d, i, yi);
+    const value = stayAt(d, i, yi, unit);
+    if (value === null || total === null) return [];
     return [{ name, value, label: pct(value / total), indent: 0, color: colorOf(top, name) }];
   }).sort((a, b) => b.value - a.value);
 
@@ -54,32 +64,35 @@ export function PlacesView() {
   const extra = pick > 0 && !top.includes(selected) ? selected : null;
   const columns = useMemo((): Column[] => {
     const shownNames = extra === null ? top : [...top, extra];
-    return d.years.map((yr, k) => {
-      const t = nightsAt(d, 0, k);
+    return d.years.flatMap((yr, k) => {
+      const t = stayAt(d, 0, k, unit);
+      if (t === null) return [];
       const shown = shownNames.map((name) => ({
         key: name,
-        value: nightsAt(d, d.prefectures.indexOf(name), k),
+        value: stayAt(d, d.prefectures.indexOf(name), k, unit) ?? 0,
         color: colorOf(top, name) ?? PICK_COLOR,
       }));
       const rest = t - shown.reduce((a, s) => a + s.value, 0);
-      return { year: yr, total: t, segments: [...shown, { key: REST, value: rest, color: REST_COLOR }] };
+      return [{ year: yr, total: t, segments: [...shown, { key: REST, value: rest, color: REST_COLOR }] }];
     });
-  }, [d, top, extra]);
+  }, [d, top, extra, unit]);
 
   const focus = pick < 0 ? 0 : pick;
   const focusName = d.prefectures[focus]!;
+  const facilityYears = unit === "nights" ? d.facilityYears : d.guestFacilityYears;
+  const facilityCube = unit === "nights" ? d.facility : d.guestFacility;
   const facilityColumns = useMemo((): Column[] => {
-    return d.facilityYears.map((yr, k) => {
+    return facilityYears.map((yr, k) => {
       const segments = d.facilities.map((name, f) => ({
         key: name,
-        value: d.facility[focus]![k]![f]!,
+        value: facilityCube[focus]![k]![f]!,
         color: FACILITY_COLORS[name]!,
       }));
       return { year: yr, total: segments.reduce((a, s) => a + s.value, 0), segments };
     });
-  }, [d, focus]);
+  }, [d, focus, facilityYears, facilityCube]);
 
-  const pickedValue = pick < 0 ? null : nightsAt(d, pick, yi);
+  const pickedValue = pick < 0 ? null : stayAt(d, pick, yi, unit);
 
   return (
     <div className="mx-auto flex w-full max-w-[1240px] gap-8 px-6 py-6 max-lg:flex-col-reverse">
@@ -93,7 +106,7 @@ export function PlacesView() {
           selected={selected}
           onSelect={(name) => setPicked(name === selected ? "" : name)}
           noneLabel="全国"
-          noneValue={nights(total)}
+          noneValue={total === null ? "—" : compact(total)}
         />
         <p className="mt-2 border-t border-rule px-2 pt-2 text-[10.5px] leading-relaxed text-faint">
           都道府県を選ぶとグラフでその県だけを濃くし、下にその県の施設タイプを出す。同じ県をもう一度押すか「全国」で解除。
@@ -102,17 +115,21 @@ export function PlacesView() {
 
       <main className="min-w-0 flex-1">
         <header className="flex flex-wrap items-center justify-between gap-3 pb-4">
-          <h1 className="text-[19px] font-semibold tracking-tight">都道府県別の外国人延べ宿泊者数</h1>
+          <h1 className="text-[19px] font-semibold tracking-tight">
+            {unit === "nights" ? "都道府県別の外国人延べ宿泊者数" : "都道府県別の外国人実宿泊者数"}
+          </h1>
           <div className="flex gap-2">
             <Segmented label="グラフ" options={CHARTS} value={chart} onChange={setChart} />
+            {hasGuests && <Segmented label="単位" options={UNITS} value={unit} onChange={setUnit} />}
             <Segmented label="尺度" options={MEASURES} value={measure} onChange={setMeasure} />
           </div>
         </header>
 
         <p className="tnum min-h-9 pb-3 text-[12.5px]">
           <span className="font-semibold">{year}年</span>
-          <span className="text-muted">{` · 全国 ${nights(total)}`}</span>
-          {pickedValue !== null && (
+          {total === null && <span className="text-muted">{` · この年の${unitLabel}はない`}</span>}
+          {total !== null && <span className="text-muted">{` · 全国 ${compact(total)}`}</span>}
+          {pickedValue !== null && total !== null && (
             <>
               <span className="text-muted"> · </span>
               <span
@@ -121,7 +138,7 @@ export function PlacesView() {
                 style={{ backgroundColor: colorOf(top, selected) ?? PICK_COLOR }}
               />
               <span className="font-semibold">{selected}</span>
-              <span className="text-muted">{` ${exact(pickedValue)}（${pct(pickedValue / total)}）`}</span>
+              <span className="text-muted">{` ${amount(pickedValue)}（${pct(pickedValue / total)}）`}</span>
             </>
           )}
           {selected !== "" && (
@@ -141,7 +158,7 @@ export function PlacesView() {
           highlighted={top.includes(selected) ? selected : (extra ?? "")}
           focused={year}
           onFocus={(y) => setYearParam(String(y))}
-          label={`都道府県別の外国人延べ宿泊者数の${measure === "share" ? "構成比" : "人泊"}`}
+          label={`都道府県別の外国人${unit === "nights" ? "延べ" : "実"}宿泊者数の${measure === "share" ? "構成比" : unitLabel}`}
         />
         <Legend
           items={[
@@ -169,7 +186,7 @@ export function PlacesView() {
           <li>
             色のついた{TOP}都道府県は{last}年の上位。「{REST}」は全国からそれらを引いた残り。施設タイプは{d.facilityYears[0]}年からで、合計との差は「タイプ不詳」。
           </li>
-          <li>全施設の延べ宿泊者数。国籍別（従業者10人以上の施設）は「国・地域」。</li>
+          <li>全施設。延べ宿泊者数は人泊、実宿泊者数は人数。国籍別（従業者10人以上の施設）は「国・地域」。</li>
         </ul>
       </main>
     </div>

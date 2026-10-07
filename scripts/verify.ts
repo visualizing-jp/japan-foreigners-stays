@@ -35,6 +35,15 @@ function main(): void {
 
   for (const table of tables) {
     gap(`${table.year} 都道府県`, table.nights[TOTAL]!, PREFECTURES.map((name) => table.nights[name]!), SUM_ROUNDING);
+    if (table.guests !== null) {
+      gap(`${table.year} 実宿泊 都道府県`, table.guests[TOTAL]!, PREFECTURES.map((name) => table.guests![name]!), SUM_ROUNDING);
+      for (const place of [TOTAL, ...PREFECTURES]) {
+        if (table.guests[place]! > table.nights[place]!) {
+          throw new Error(`${table.year} ${place}: 実宿泊者数 ${table.guests[place]} が延べ ${table.nights[place]} を超える`);
+        }
+        checks += 1;
+      }
+    }
     if (table.facility !== null) {
       for (const place of [TOTAL, ...PREFECTURES]) {
         const values = table.facility[place]!;
@@ -49,6 +58,13 @@ function main(): void {
           PREFECTURES.map((place) => table.facility![place]![name]!),
           SUM_ROUNDING,
         );
+      }
+    }
+    if (table.guestFacility !== null && table.guests !== null) {
+      for (const place of [TOTAL, ...PREFECTURES]) {
+        const values = table.guestFacility[place]!;
+        if (Object.keys(values).join() !== FACILITIES.join()) throw new Error(`${table.year} ${place}: 実宿泊の施設タイプが足りない`);
+        gap(`${table.year} ${place} 実宿泊施設`, table.guests[place]!, FACILITIES.map((name) => values[name]!), ROUNDING);
       }
     }
     const covered = table.nations[TOTAL];

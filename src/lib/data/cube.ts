@@ -10,11 +10,17 @@ export interface StaysJson {
   prefectures: string[];
   /** prefectures × years。公表の全国値。 */
   nights: number[][];
+  /** prefectures × years。第3表がなければその年は null。 */
+  guests: (number | null)[][];
   /** 施設タイプを分けて読む最初の年以降。全施設。 */
   facilityYears: number[];
   facilities: string[];
   /** prefectures × facilityYears × facilities。 */
   facility: number[][][];
+  /** 実宿泊者数の施設タイプがある年。 */
+  guestFacilityYears: number[];
+  /** prefectures × guestFacilityYears × facilities。 */
+  guestFacility: number[][][];
   nations: string[];
   /**
    * nations × prefectures × years。従業者10人以上の施設。

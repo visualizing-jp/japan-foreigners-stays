@@ -27,6 +27,10 @@ export interface YearTable {
   nights: PlaceValues;
   /** 2015年以降。タイプ不詳を含む。 */
   facility: Record<string, PlaceValues> | null;
+  /** 第3表の外国人実宿泊者数。シートがなければ null。 */
+  guests: PlaceValues | null;
+  /** 2015年以降の第5表。タイプ不詳を含む。第3表がなければ null。 */
+  guestFacility: Record<string, PlaceValues> | null;
   /** その年の表にある国籍だけ。国籍不詳を含む。従業者10人以上。 */
   nations: Record<string, PlaceValues>;
 }
@@ -58,10 +62,14 @@ function rowsOf(path: string, sheet: string): Row[] {
 }
 
 function sheetNamed(path: string, pattern: RegExp): string {
-  const book = XLSX.read(readFileSync(path), { bookSheets: true });
-  const name = book.SheetNames.find((n) => pattern.test(n));
+  const name = findSheet(path, pattern);
   if (name === undefined) throw new Error(`${path}: ${pattern} に合うシートがない`);
   return name;
+}
+
+function findSheet(path: string, pattern: RegExp): string | undefined {
+  const book = XLSX.read(readFileSync(path), { bookSheets: true });
+  return book.SheetNames.find((n) => pattern.test(n));
 }
 
 function placeOf(cell: Cell): string | null {
@@ -122,7 +130,40 @@ function nationOf(label: string, where: string): string {
   return name;
 }
 
-/** 各年の集計結果。第4表の外国人と、参考第1表の国籍。 */
+function foreignerCol(rows: Row[], where: string): number {
+  for (const row of rows.slice(0, 8)) {
+    const col = row.findIndex((cell, i) => i > 0 && clean(cell).includes("外国人") && !clean(cell).startsWith("第"));
+    if (col >= 0) return col;
+  }
+  throw new Error(`${where}: 外国人の列がない`);
+}
+
+function facilityByType(rows: Row[], totals: PlaceValues, year: number, where: string): Record<string, PlaceValues> {
+  const typeRow = rows.findIndex((row) => row.some((cell) => clean(cell) === "旅館"));
+  if (typeRow < 1) throw new Error(`${year}: 施設タイプの見出しがない`);
+  const totalCol = rows[typeRow - 1]!.findIndex((cell) => clean(cell).includes("外国人"));
+  if (totalCol < 0) throw new Error(`${year}: ${where}の外国人の列がない`);
+  const typeCols = rows[typeRow]!.flatMap((cell, c) => (c > totalCol && clean(cell) !== "" ? [{ c, name: clean(cell) }] : []));
+  const names = typeCols.map((col) => col.name).join("、");
+  if (names !== NAMED_FACILITIES.join("、")) throw new Error(`${year}: 施設タイプが想定と違う（${names}）`);
+  return Object.fromEntries(
+    [TOTAL, ...PREFECTURES].map((place) => {
+      const row = rows.find((r) => placeOf(r[0]) === place)!;
+      const values: PlaceValues = {};
+      let sum = 0;
+      for (const col of typeCols) {
+        values[col.name] = count(row[col.c], `${year} ${place} ${col.name}`);
+        sum += values[col.name]!;
+      }
+      const unknown = totals[place]! - sum;
+      if (unknown < -ROUNDING) throw new Error(`${year} ${place}: ${where}の施設タイプの和が合計を ${-unknown} 超える`);
+      values["タイプ不詳"] = Math.max(0, unknown);
+      return [place, values];
+    }),
+  );
+}
+
+/** 各年の集計結果。第4表の外国人と、参考第1表の国籍。第3表・第5表があれば実宿泊者数も。 */
 export function readAnnual(path: string, year: number): YearTable {
   const facilitySheet = sheetNamed(path, /第[4４]表\(年計\)/);
   const nationSheet = sheetNamed(path, /参考第[1１]表\(年計\)/);
@@ -133,33 +174,47 @@ export function readAnnual(path: string, year: number): YearTable {
   if (typeRow < 1) throw new Error(`${year}: 施設タイプの見出しがない`);
   const totalCol = facilityRows[typeRow - 1]!.findIndex((cell) => clean(cell).includes("外国人"));
   if (totalCol < 0) throw new Error(`${year}: 外国人延べ宿泊者数の列がない`);
-  const typeCols = facilityRows[typeRow]!.flatMap((cell, c) =>
-    c > totalCol && clean(cell) !== "" ? [{ c, name: clean(cell) }] : [],
-  );
   const withFacility = year >= FACILITY_SINCE;
-  if (withFacility) {
-    const names = typeCols.map((col) => col.name).join("、");
-    if (names !== NAMED_FACILITIES.join("、")) throw new Error(`${year}: 施設タイプが想定と違う（${names}）`);
-  }
 
-  const nights = places(facilityRows, (row) => ({ [TOTAL]: count(row[totalCol], `${year} ${clean(row[0])}`) }), `${year} 第4表`);
-  const facility = withFacility
-    ? Object.fromEntries(
-        [TOTAL, ...PREFECTURES].map((place) => {
-          const row = facilityRows.find((r) => placeOf(r[0]) === place)!;
-          const values: PlaceValues = {};
-          let sum = 0;
-          for (const col of typeCols) {
-            values[col.name] = count(row[col.c], `${year} ${place} ${col.name}`);
-            sum += values[col.name]!;
-          }
-          const unknown = nights[place]![TOTAL]! - sum;
-          if (unknown < -ROUNDING) throw new Error(`${year} ${place}: 施設タイプの和が合計を ${-unknown} 超える`);
-          values["タイプ不詳"] = Math.max(0, unknown);
-          return [place, values];
-        }),
-      )
-    : null;
+  const nights = Object.fromEntries(
+    Object.entries(places(facilityRows, (row) => ({ [TOTAL]: count(row[totalCol], `${year} ${clean(row[0])}`) }), `${year} 第4表`)).map(
+      ([place, v]) => [place, v[TOTAL]!],
+    ),
+  );
+  const facility = withFacility ? facilityByType(facilityRows, nights, year, "延べ宿泊者数") : null;
+
+  const guestSheet = findSheet(path, /第[3３]表\(年計\)/);
+  const guestRows = guestSheet === undefined ? null : rowsOf(path, guestSheet);
+  const guestCol = guestRows === null ? -1 : foreignerCol(guestRows, `${year} 第3表`);
+  const guests =
+    guestRows === null
+      ? null
+      : Object.fromEntries(
+          Object.entries(
+            places(
+              guestRows.filter((row) => {
+                const cell = row[guestCol];
+                if (typeof cell === "number") return true;
+                const text = clean(cell).replace(/[,*＊]/g, "");
+                return text !== "" && text !== "-" && text !== "－" && Number.isFinite(Number(text));
+              }),
+              (row) => ({ [TOTAL]: count(row[guestCol], `${year} ${clean(row[0])} 実宿泊`) }),
+              `${year} 第3表`,
+            ),
+          ).map(([place, v]) => [place, v[TOTAL]!]),
+        );
+  if (guests !== null) {
+    for (const place of [TOTAL, ...PREFECTURES]) {
+      if (guests[place]! > nights[place]!) {
+        throw new Error(`${year} ${place}: 実宿泊者数 ${guests[place]} が延べ宿泊者数 ${nights[place]} を超える`);
+      }
+    }
+  }
+  const guestFacilitySheet = findSheet(path, /第[5５]表\(年計\)/);
+  const guestFacility =
+    guests !== null && withFacility && guestFacilitySheet !== undefined
+      ? facilityByType(rowsOf(path, guestFacilitySheet), guests, year, "実宿泊者数")
+      : null;
 
   const head = nationRows.findIndex((row) => row.some((cell) => clean(cell) === "韓国"));
   if (head < 0) throw new Error(`${year}: 国籍の見出しがない`);
@@ -194,5 +249,5 @@ export function readAnnual(path: string, year: number): YearTable {
     nations[col.name] = Object.fromEntries([TOTAL, ...PREFECTURES].map((place) => [place, byPlace[place]![col.name]!]));
   }
   const totals = Object.fromEntries([TOTAL, ...PREFECTURES].map((place) => [place, byPlace[place]![TOTAL]!]));
-  return { year, nights: Object.fromEntries(Object.entries(nights).map(([place, v]) => [place, v[TOTAL]!])), facility, nations: { ...nations, [TOTAL]: totals } };
+  return { year, nights, facility, guests, guestFacility, nations: { ...nations, [TOTAL]: totals } };
 }
